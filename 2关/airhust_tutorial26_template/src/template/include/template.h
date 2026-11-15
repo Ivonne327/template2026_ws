@@ -78,7 +78,74 @@ bool mission_pos_cruise(float x, float y, float z, float target_yaw, float error
 	return false;
 }
 
-// 以首次调用时的当前位置为 XY 平移起点；不进行机体航向旋转。
+// 联系任务新增。
+//使用位置误差生成速度目标，并在到达后停止。
+bool mission_vel_cruise(float x, float y, float z,
+                        float target_yaw, float error_max)
+{
+    const float position_gain = 0.5f;
+    const float horizontal_speed_max = 0.5f;
+
+    // 相对坐标加上起飞时记录的初始位置。
+    float target_x = x + init_position_x_take_off;
+    float target_y = y + init_position_y_take_off;
+    float target_z = z + init_position_z_take_off;
+
+    // 每轮使用最新反馈重新计算误差。
+    float error_x = target_x - local_pos.pose.pose.position.x;
+    float error_y = target_y - local_pos.pose.pose.position.y;
+    float error_z = target_z - local_pos.pose.pose.position.z;
+
+    // 位置误差越大，目标速度越大。
+    float velocity_x = position_gain * error_x;
+    float velocity_y = position_gain * error_y;
+    float velocity_z = 0.0f;
+
+    // 限制水平合速度。
+    float horizontal_speed =
+        std::sqrt(velocity_x * velocity_x + velocity_y * velocity_y);
+
+    if (horizontal_speed > horizontal_speed_max)
+    {
+        float speed_scale = horizontal_speed_max / horizontal_speed;
+        velocity_x *= speed_scale;
+        velocity_y *= speed_scale;
+    }
+
+    // 忽略位置、加速度/力和yaw_rate，使用三轴速度与yaw。
+    setpoint_raw.type_mask = 1 + 2 + 4 + 64 + 128 + 256 + 2048;
+    setpoint_raw.coordinate_frame = 1;
+
+    setpoint_raw.velocity.x = velocity_x;
+    setpoint_raw.velocity.y = velocity_y;
+    setpoint_raw.velocity.z = velocity_z;
+    setpoint_raw.yaw = target_yaw;
+
+    ROS_INFO("velocity target: error(%.3f, %.3f, %.3f), "
+             "velocity(%.3f, %.3f, %.3f)",
+             error_x, error_y, error_z,
+             velocity_x, velocity_y, velocity_z);
+
+    bool arrived =
+        std::fabs(error_x) < error_max &&
+        std::fabs(error_y) < error_max &&
+        std::fabs(error_z) < error_max &&
+        std::fabs(yaw - target_yaw) < 0.1;
+
+    if (arrived)
+    {
+        // 飞控收到这一帧后，目标速度变为零。
+        setpoint_raw.velocity.x = 0.0f;
+        setpoint_raw.velocity.y = 0.0f;
+        setpoint_raw.velocity.z = 0.0f;
+
+        ROS_INFO("velocity cruise target reached");
+        return true;
+    }
+
+    return false;
+}
+
 float current_position_cruise_last_position_x = 0;
 float current_position_cruise_last_position_y = 0;
 bool current_position_cruise_flag = false;
